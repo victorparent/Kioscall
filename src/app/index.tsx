@@ -1,7 +1,9 @@
 
 import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -12,6 +14,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { openBrowserAsync } from 'expo-web-browser';
+
+import { useNews } from '@/hooks/use-news';
+import { timeAgo, type Story } from '@/lib/news';
 
 const COLORS = {
   bg: '#0B0C12',
@@ -25,212 +31,73 @@ const COLORS = {
   green: '#8BE0B1',
 };
 
-const categories = [
-  { name: 'Tout', emoji: '✳' },
-  { name: 'Monde', emoji: '🌍' },
-  { name: 'Politique', emoji: '🏛' },
-  { name: 'Tech', emoji: '◈' },
-  { name: 'Économie', emoji: '↗' },
-  { name: 'Climat', emoji: '🌱' },
-];
+const ALL_CATEGORY = { name: 'Tout', emoji: '✳' };
 
-const stories = [
-  {
-    id: '1',
-    category: 'Monde',
-    emoji: '🌍',
-    time: 'IL Y A 12 MIN',
-    title: 'Les négociations climatiques entrent dans une phase décisive',
-    summary:
-      'Des représentants de plusieurs pays poursuivent les discussions autour de nouveaux engagements climatiques. Les négociations portent notamment sur le financement et le calendrier des mesures. Les annonces finales restent à confirmer.',
-    facts: [
-      'Les discussions portent sur les engagements climatiques.',
-      'Le financement reste un point central des négociations.',
-      'Les détails définitifs doivent être confirmés par les parties.',
-    ],
-    sources: [
-      {
-        name: 'World Report',
-        initials: 'WR',
-        headline: 'Les discussions se poursuivent entre les délégations',
-        angle: 'International',
-        color: '#8EB5FF',
-      },
-      {
-        name: 'The Daily',
-        initials: 'TD',
-        headline: 'Le financement au cœur des négociations',
-        angle: 'Économie',
-        color: '#F2B77D',
-      },
-      {
-        name: 'Le Journal',
-        initials: 'LJ',
-        headline: 'Les ONG attendent des engagements concrets',
-        angle: 'Société',
-        color: '#9DDEB5',
-      },
-    ],
-  },
-  {
-    id: '2',
-    category: 'Tech',
-    emoji: '◈',
-    time: 'IL Y A 28 MIN',
-    title: 'L’intelligence artificielle transforme le monde du travail',
-    summary:
-      'De nouvelles études examinent les effets de l’IA sur les métiers et les compétences. Les conséquences varient selon les secteurs : certaines tâches sont automatisées, tandis que d’autres évoluent. L’ampleur des effets à long terme reste débattue.',
-    facts: [
-      'L’IA automatise certaines tâches professionnelles.',
-      'Les effets diffèrent selon les métiers et les secteurs.',
-      'Les conséquences à long terme restent incertaines.',
-    ],
-    sources: [
-      {
-        name: 'Tech Today',
-        initials: 'TT',
-        headline: 'Les entreprises réorganisent certaines tâches',
-        angle: 'Innovation',
-        color: '#B6A4FF',
-      },
-      {
-        name: 'Business Focus',
-        initials: 'BF',
-        headline: 'Les compétences évoluent avec les outils d’IA',
-        angle: 'Emploi',
-        color: '#F2B77D',
-      },
-    ],
-  },
-  {
-    id: '3',
-    category: 'Économie',
-    emoji: '↗',
-    time: 'IL Y A 45 MIN',
-    title: 'Les banques centrales surveillent toujours l’inflation',
-    summary:
-      'Les responsables monétaires évaluent les dernières données économiques avant leurs prochaines décisions. Les prix, les salaires et l’activité restent des indicateurs importants. Les décisions futures dépendront des données disponibles.',
-    facts: [
-      'Les données sur les prix sont suivies de près.',
-      'Les salaires et l’activité font partie des indicateurs observés.',
-      'Les prochaines décisions dépendront des nouvelles données.',
-    ],
-    sources: [
-      {
-        name: 'Market Brief',
-        initials: 'MB',
-        headline: 'Les marchés analysent les prochains indicateurs',
-        angle: 'Marchés',
-        color: '#9DDEB5',
-      },
-      {
-        name: 'The Daily',
-        initials: 'TD',
-        headline: 'Les ménages restent attentifs à l’évolution des prix',
-        angle: 'Vie quotidienne',
-        color: '#F2B77D',
-      },
-    ],
-  },
-  {
-    id: '4',
-    category: 'Politique',
-    emoji: '🏛',
-    time: 'IL Y A 1 H',
-    title: 'Un nouveau débat s’ouvre autour des politiques publiques',
-    summary:
-      'Des responsables politiques défendent des approches différentes sur plusieurs mesures publiques. Les propositions doivent encore être examinées et leur mise en œuvre dépendra du processus institutionnel.',
-    facts: [
-      'Plusieurs propositions sont actuellement débattues.',
-      'Les responsables défendent des approches différentes.',
-      'Le calendrier dépend du processus institutionnel.',
-    ],
-    sources: [
-      {
-        name: 'Le Journal',
-        initials: 'LJ',
-        headline: 'Les principales propositions au centre du débat',
-        angle: 'Institutions',
-        color: '#9DDEB5',
-      },
-      {
-        name: 'World Report',
-        initials: 'WR',
-        headline: 'Les réactions politiques restent contrastées',
-        angle: 'Politique',
-        color: '#8EB5FF',
-      },
-    ],
-  },
-  {
-    id: '5',
-    category: 'Climat',
-    emoji: '🌱',
-    time: 'IL Y A 2 H',
-    title: 'Les villes cherchent de nouvelles solutions face aux fortes chaleurs',
-    summary:
-      'Plusieurs collectivités étudient des mesures pour réduire l’exposition à la chaleur. Végétalisation, ombrage et aménagement urbain figurent parmi les solutions régulièrement examinées.',
-    facts: [
-      'Les villes évaluent différentes stratégies d’adaptation.',
-      'La végétalisation et l’ombrage font partie des pistes.',
-      'Les résultats dépendent du contexte local.',
-    ],
-    sources: [
-      {
-        name: 'Earth Review',
-        initials: 'ER',
-        headline: 'La végétalisation gagne une place dans les plans urbains',
-        angle: 'Environnement',
-        color: '#9DDEB5',
-      },
-      {
-        name: 'The Daily',
-        initials: 'TD',
-        headline: 'Comment adapter les espaces publics à la chaleur',
-        angle: 'Urbanisme',
-        color: '#F2B77D',
-      },
-    ],
-  },
-];
-
-type Story = (typeof stories)[number];
+function uniqueOutlets(story: Story) {
+  const seen = new Map<string, Story['articles'][number]['outlet']>();
+  story.articles.forEach(article => seen.set(article.outlet.name, article.outlet));
+  return [...seen.values()];
+}
 
 export default function HomeScreen() {
-  const [activeCategory, setActiveCategory] = useState('Tout');
+  const {
+    stories,
+    categories: serverCategories,
+    loading,
+    refreshing,
+    error,
+    updatedAt,
+    refresh,
+  } = useNews();
+  const [selectedCategory, setActiveCategory] = useState('Tout');
+  const categories = useMemo(
+    () => [ALL_CATEGORY, ...serverCategories],
+    [serverCategories]
+  );
+  // The server can retire a rubric: fall back to everything if the chosen one is gone.
+  const activeCategory = categories.some(c => c.name === selectedCategory)
+    ? selectedCategory
+    : 'Tout';
   const [activeTab, setActiveTab] = useState('Accueil');
   const [search, setSearch] = useState('');
   const [selectedStory, setSelectedStory] = useState<Story | null>(null);
-  const [favorites, setFavorites] = useState<string[]>([]);
+  // Favorites keep a snapshot of the story so it survives feed refreshes.
+  const [favorites, setFavorites] = useState<Story[]>([]);
+
+  const isFavorite = (id: string) => favorites.some(story => story.id === id);
 
   const visibleStories = useMemo(() => {
-    return stories.filter(story => {
+    const query = search.trim().toLowerCase();
+    const source = activeTab === 'Favoris' ? favorites : stories;
+    const matches = source.filter(story => {
       const matchesCategory =
         activeCategory === 'Tout' || story.category === activeCategory;
       const matchesSearch =
-        story.title.toLowerCase().includes(search.toLowerCase()) ||
-        story.category.toLowerCase().includes(search.toLowerCase());
-      const matchesTab =
-        activeTab !== 'Favoris' || favorites.includes(story.id);
+        !query ||
+        story.title.toLowerCase().includes(query) ||
+        story.category.toLowerCase().includes(query) ||
+        story.summary.toLowerCase().includes(query);
 
-      return matchesCategory && matchesSearch && matchesTab;
+      return matchesCategory && matchesSearch;
     });
-  }, [activeCategory, activeTab, favorites, search]);
+    // Most recent first.
+    return matches.sort((a, b) => b.publishedAt - a.publishedAt);
+  }, [activeCategory, activeTab, favorites, search, stories]);
 
-  function toggleFavorite(id: string) {
+  function toggleFavorite(story: Story) {
     setFavorites(current =>
-      current.includes(id)
-        ? current.filter(item => item !== id)
-        : [...current, id]
+      current.some(item => item.id === story.id)
+        ? current.filter(item => item.id !== story.id)
+        : [story, ...current]
     );
   }
 
-  function openSource(name: string, headline: string) {
-    Alert.alert(
-      name,
-      `"${headline}"\n\nLes liens vers les articles originaux seront connectés lorsque Kioscall sera branché à de vraies sources d'actualité.`,
-      [{ text: 'Compris' }]
-    );
+  async function openArticle(url: string) {
+    try {
+      await openBrowserAsync(url);
+    } catch {
+      Alert.alert('Lien indisponible', "Impossible d’ouvrir cet article.");
+    }
   }
 
   function goHome() {
@@ -239,7 +106,7 @@ export default function HomeScreen() {
   }
 
   function renderStoryCard(story: Story) {
-    const saved = favorites.includes(story.id);
+    const saved = isFavorite(story.id);
 
     return (
       <TouchableOpacity
@@ -254,41 +121,43 @@ export default function HomeScreen() {
               {story.emoji}  {story.category.toUpperCase()}
             </Text>
           </View>
-          <Text style={styles.storyTime}>{story.time}</Text>
+          <Text style={styles.storyTime}>{timeAgo(story.publishedAt)}</Text>
         </View>
 
         <Text style={styles.storyTitle}>{story.title}</Text>
-        <Text style={styles.storyPreview} numberOfLines={3}>
-          {story.summary}
-        </Text>
+        {story.summary ? (
+          <Text style={styles.storyPreview} numberOfLines={3}>
+            {story.summary}
+          </Text>
+        ) : null}
 
         <View style={styles.storyBottom}>
           <View style={styles.sourceAvatars}>
-            {story.sources.slice(0, 3).map((source, index) => (
+            {uniqueOutlets(story).slice(0, 3).map((outlet, index) => (
               <View
-                key={source.name}
+                key={outlet.name}
                 style={[
                   styles.miniSource,
                   {
-                    backgroundColor: source.color,
+                    backgroundColor: outlet.color,
                     marginLeft: index === 0 ? 0 : -7,
                     zIndex: 3 - index,
                   },
                 ]}
               >
                 <Text style={styles.miniSourceText}>
-                  {source.initials.slice(0, 1)}
+                  {outlet.initials.slice(0, 1)}
                 </Text>
               </View>
             ))}
           </View>
 
           <Text style={styles.sourceCount}>
-            {story.sources.length} perspectives
+            {uniqueOutlets(story).length} sources · {story.articles.length} articles
           </Text>
 
           <TouchableOpacity
-            onPress={() => toggleFavorite(story.id)}
+            onPress={() => toggleFavorite(story)}
             style={styles.saveButton}
           >
             <Text style={[styles.saveIcon, saved && styles.savedIcon]}>
@@ -303,7 +172,8 @@ export default function HomeScreen() {
   }
 
   function renderDetail(story: Story) {
-    const saved = favorites.includes(story.id);
+    const saved = isFavorite(story.id);
+    const lead = story.articles.find(article => article.description);
 
     return (
       <>
@@ -318,91 +188,68 @@ export default function HomeScreen() {
           <Text style={styles.categoryTagText}>
             {story.emoji}  {story.category.toUpperCase()}
           </Text>
-          <Text style={styles.storyTime}>{story.time}</Text>
+          <Text style={styles.storyTime}>{timeAgo(story.publishedAt)}</Text>
         </View>
 
         <Text style={styles.detailTitle}>{story.title}</Text>
 
-        <View style={styles.disclaimer}>
-          <Text style={styles.disclaimerTitle}>APERÇU DE DÉMONSTRATION</Text>
-          <Text style={styles.disclaimerText}>
-            Ce contenu est un exemple d'interface, pas une synthèse
-            d'actualité vérifiée.
-          </Text>
-        </View>
-
-        <View style={styles.oneStoryCard}>
-          <View style={styles.oneStoryHeader}>
-            <View style={styles.oneStoryMark}>
-              <Text style={styles.oneStoryMarkText}>K</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.oneStoryLabel}>KIOSCALL INTELLIGENCE</Text>
-              <Text style={styles.oneStoryTitle}>One Story</Text>
-            </View>
-            <View style={styles.aiTag}>
-              <Text style={styles.aiTagText}>AI</Text>
-            </View>
+        {lead && (
+          <View style={styles.oneStoryCard}>
+            <Text style={styles.factsTitle}>
+              L’ESSENTIEL · {lead.outlet.name.toUpperCase()}
+            </Text>
+            <Text style={styles.summaryText}>{lead.description}</Text>
           </View>
-
-          <Text style={styles.summaryText}>{story.summary}</Text>
-
-          <View style={styles.thinLine} />
-
-          <Text style={styles.factsTitle}>LES POINTS À RETENIR</Text>
-          {story.facts.map((fact, index) => (
-            <View key={fact} style={styles.factRow}>
-              <Text style={styles.factNumber}>0{index + 1}</Text>
-              <Text style={styles.factText}>{fact}</Text>
-            </View>
-          ))}
-
-          <Text style={styles.disclaimerSmall}>
-            Une synthèse fiable devra citer ses sources et signaler les
-            informations incertaines ou contradictoires.
-          </Text>
-        </View>
+        )}
 
         <View style={styles.perspectiveHeading}>
           <Text style={styles.sectionTitle}>Every Perspective</Text>
           <Text style={styles.perspectiveSubtitle}>
-            Explore les différents traitements du sujet.
+            {`Le même sujet, vu par ${uniqueOutlets(story).length} rédactions.`}
           </Text>
+          {story.aiGrouped && (
+            <Text style={styles.aiNote}>
+              Regroupement et titre générés par IA à partir des flux des médias.
+              Les articles et leurs chapôs sont ceux des rédactions.
+            </Text>
+          )}
         </View>
 
         <View style={styles.sourceCountBanner}>
           <Text style={styles.sourceCountBannerText}>
-            {story.sources.length} SOURCES DE DÉMONSTRATION
+            {story.articles.length} ARTICLE{story.articles.length > 1 ? 'S' : ''}
           </Text>
         </View>
 
-        {story.sources.map((source, index) => (
+        {story.articles.map(article => (
           <TouchableOpacity
-            key={`${source.name}-${index}`}
+            key={article.url}
             style={styles.sourceCard}
-            onPress={() => openSource(source.name, source.headline)}
+            onPress={() => openArticle(article.url)}
             activeOpacity={0.8}
           >
             <View
-              style={[styles.sourceLogo, { backgroundColor: source.color }]}
+              style={[styles.sourceLogo, { backgroundColor: article.outlet.color }]}
             >
-              <Text style={styles.sourceLogoText}>{source.initials}</Text>
+              <Text style={styles.sourceLogoText}>{article.outlet.initials}</Text>
             </View>
 
             <View style={styles.sourceContent}>
               <View style={styles.sourceNameRow}>
-                <Text style={styles.sourceName}>{source.name}</Text>
-                <Text style={styles.sourceAngle}>{source.angle}</Text>
+                <Text style={styles.sourceName}>{article.outlet.name}</Text>
+                <Text style={styles.sourceAngle}>
+                  {timeAgo(article.publishedAt)}
+                </Text>
               </View>
-              <Text style={styles.sourceHeadline}>{source.headline}</Text>
-              <Text style={styles.readArticle}>Lire l'article ↗</Text>
+              <Text style={styles.sourceHeadline}>{article.title}</Text>
+              <Text style={styles.readArticle}>Lire l’article ↗</Text>
             </View>
           </TouchableOpacity>
         ))}
 
         <TouchableOpacity
           style={styles.favoriteDetailButton}
-          onPress={() => toggleFavorite(story.id)}
+          onPress={() => toggleFavorite(story)}
         >
           <Text style={styles.favoriteDetailText}>
             {saved ? '★  Retirer des favoris' : '☆  Sauvegarder cette histoire'}
@@ -451,13 +298,20 @@ export default function HomeScreen() {
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refresh}
+            tintColor={COLORS.white}
+          />
+        }
       >
         {selectedStory ? (
           renderDetail(selectedStory)
         ) : (
           <>
             <View style={styles.hero}>
-              <Text style={styles.heroEyebrow}>L'ACTUALITÉ, AUTREMENT</Text>
+              <Text style={styles.heroEyebrow}>L’ACTUALITÉ, AUTREMENT</Text>
               <Text style={styles.heroTitle}>
                 Une histoire.
                 {'\n'}
@@ -542,12 +396,38 @@ export default function HomeScreen() {
                 </Text>
               </View>
               <View style={styles.livePill}>
-                <View style={styles.liveDot} />
-                <Text style={styles.liveText}>DÉMO</Text>
+                <View
+                  style={[styles.liveDot, error && styles.liveDotError]}
+                />
+                <Text style={[styles.liveText, error && styles.liveTextError]}>
+                  {error
+                    ? 'HORS LIGNE'
+                    : updatedAt
+                      ? `MAJ ${new Date(updatedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
+                      : 'EN DIRECT'}
+                </Text>
               </View>
             </View>
 
-            {visibleStories.length > 0 ? (
+            {error && (
+              <TouchableOpacity style={styles.errorBanner} onPress={refresh}>
+                <Text style={styles.errorBannerText}>
+                  {error}
+                  {stories.length > 0
+                    ? ' Les dernières infos reçues restent affichées. Toucher pour réessayer.'
+                    : ' Toucher pour réessayer.'}
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {loading && stories.length === 0 ? (
+              <View style={styles.emptyState}>
+                <ActivityIndicator color={COLORS.white} />
+                <Text style={[styles.emptyText, { marginTop: 14 }]}>
+                  Chargement de l’actualité…
+                </Text>
+              </View>
+            ) : visibleStories.length > 0 ? (
               visibleStories.map(renderStoryCard)
             ) : (
               <View style={styles.emptyState}>
@@ -580,10 +460,10 @@ export default function HomeScreen() {
             <View style={styles.bottomMessage}>
               <Text style={styles.bottomMessageMark}>✳</Text>
               <Text style={styles.bottomMessageTitle}>
-                L'information mérite du contexte.
+                L’information mérite du contexte.
               </Text>
               <Text style={styles.bottomMessageText}>
-                Ne te contente pas d'un seul angle. Explore les sources et
+                Ne te contente pas d’un seul angle. Explore les sources et
                 construis ta propre compréhension.
               </Text>
             </View>
@@ -818,6 +698,25 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: 3,
     backgroundColor: COLORS.green,
+  },
+  liveDotError: {
+    backgroundColor: '#F28B82',
+  },
+  liveTextError: {
+    color: '#F28B82',
+  },
+  errorBanner: {
+    backgroundColor: '#2A1E24',
+    borderWidth: 1,
+    borderColor: '#5A3340',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 13,
+  },
+  errorBannerText: {
+    color: '#F2B8BF',
+    fontSize: 11,
+    lineHeight: 17,
   },
   liveText: {
     color: COLORS.green,
@@ -1089,6 +988,12 @@ const styles = StyleSheet.create({
   },
   perspectiveHeading: {
     marginBottom: 16,
+  },
+  aiNote: {
+    color: '#7F8196',
+    fontSize: 10,
+    lineHeight: 16,
+    marginTop: 8,
   },
   perspectiveSubtitle: {
     color: COLORS.muted,
