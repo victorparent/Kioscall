@@ -10,6 +10,8 @@ export type Article = {
   title: string;
   description: string;
   url: string;
+  /** Thumbnail provided by the feed, when there is one. */
+  image?: string;
   publishedAt: number;
   /** Category of the thematic feed it came from, if any. */
   categoryHint?: string;
@@ -26,6 +28,14 @@ export type Story = {
   topics: string[];
   /** True when the grouping and the title were produced by the AI grouping step. */
   aiGrouped?: boolean;
+  /** When the story last received an article (server clock); used to send only what changed. */
+  updatedAt?: number;
+  /** Large landscape picture checked by the server (see news-images.ts). */
+  image?: string;
+  /** Best small picture, for list rows. */
+  thumb?: string;
+  /** True once the server looked at the pictures: no `image` then means "none good enough". */
+  imageChecked?: boolean;
   articles: Article[];
 };
 
@@ -44,6 +54,9 @@ const OUTLETS = {
   rfi: { name: 'RFI', initials: 'RF', color: '#8ED0F2' },
   ouestfrance: { name: 'Ouest-France', initials: 'OF', color: '#E8B77A' },
   vingtminutes: { name: '20 Minutes', initials: '20', color: '#B8C4FF' },
+  clubic: { name: 'Clubic', initials: 'CL', color: '#7AD0FF' },
+  journaldugeek: { name: 'Journal du Geek', initials: 'JG', color: '#FFD37A' },
+  frandroid: { name: 'Frandroid', initials: 'FA', color: '#9BE59B' },
 } satisfies Record<string, Outlet>;
 
 export const CATEGORY_EMOJI: Record<string, string> = {
@@ -53,6 +66,8 @@ export const CATEGORY_EMOJI: Record<string, string> = {
   Économie: '↗',
   Climat: '🌱',
   Société: '👥',
+  Sport: '🏅',
+  Culture: '🎭',
 };
 
 /** `category` is a hint from thematic feeds; general feeds have none and are classified through the story they join. */
@@ -77,15 +92,29 @@ const FEEDS: Feed[] = [
   { category: 'Politique', outlet: O.franceinfo, url: 'https://www.francetvinfo.fr/politique.rss' },
   { category: 'Politique', outlet: O.figaro, url: 'https://www.lefigaro.fr/rss/figaro_politique.xml' },
   { category: 'Politique', outlet: O.bfmtv, url: 'https://www.bfmtv.com/rss/politique/' },
+  { category: 'Politique', outlet: O.lexpress, url: 'https://www.lexpress.fr/arc/outboundfeeds/rss/politique.xml' },
   { category: 'Tech', outlet: O.lemonde, url: 'https://www.lemonde.fr/pixels/rss_full.xml' },
   { category: 'Tech', outlet: O.franceinfo, url: 'https://www.francetvinfo.fr/internet.rss' },
   { category: 'Tech', outlet: O.figaro, url: 'https://www.lefigaro.fr/rss/figaro_secteur_high-tech.xml' },
   { category: 'Tech', outlet: O.numerama, url: 'https://www.numerama.com/feed/' },
+  { category: 'Tech', outlet: O.bfmtv, url: 'https://www.bfmtv.com/rss/tech/' },
+  { category: 'Tech', outlet: O.clubic, url: 'https://www.clubic.com/feed/news.rss' },
+  { category: 'Tech', outlet: O.journaldugeek, url: 'https://www.journaldugeek.com/feed/' },
+  { category: 'Tech', outlet: O.frandroid, url: 'https://www.frandroid.com/feed' },
   { category: 'Économie', outlet: O.lemonde, url: 'https://www.lemonde.fr/economie/rss_full.xml' },
   { category: 'Économie', outlet: O.franceinfo, url: 'https://www.francetvinfo.fr/economie.rss' },
   { category: 'Économie', outlet: O.figaro, url: 'https://www.lefigaro.fr/rss/figaro_economie.xml' },
+  { category: 'Économie', outlet: O.bfmtv, url: 'https://www.bfmtv.com/rss/economie/' },
   { category: 'Climat', outlet: O.lemonde, url: 'https://www.lemonde.fr/climat/rss_full.xml' },
   { category: 'Climat', outlet: O.figaro, url: 'https://www.lefigaro.fr/rss/figaro_environnement.xml' },
+  { category: 'Climat', outlet: O.lemonde, url: 'https://www.lemonde.fr/planete/rss_full.xml' },
+  { category: 'Climat', outlet: O.bfmtv, url: 'https://www.bfmtv.com/rss/environnement/' },
+  { category: 'Sport', outlet: O.lemonde, url: 'https://www.lemonde.fr/sport/rss_full.xml' },
+  { category: 'Sport', outlet: O.franceinfo, url: 'https://www.francetvinfo.fr/sports.rss' },
+  { category: 'Sport', outlet: O.figaro, url: 'https://www.lefigaro.fr/rss/figaro_sport.xml' },
+  { category: 'Culture', outlet: O.lemonde, url: 'https://www.lemonde.fr/culture/rss_full.xml' },
+  { category: 'Culture', outlet: O.franceinfo, url: 'https://www.francetvinfo.fr/culture.rss' },
+  { category: 'Culture', outlet: O.bfmtv, url: 'https://www.bfmtv.com/rss/culture/' },
   // General feeds: more outlets covering the same big stories.
   { outlet: O.lemonde, url: 'https://www.lemonde.fr/rss/une.xml' },
   { outlet: O.lemonde, url: 'https://www.lemonde.fr/societe/rss_full.xml' },
@@ -158,6 +187,42 @@ function parseRssDate(raw: string): number {
   );
 }
 
+/**
+ * Some feeds point to tiny pictures (Le Monde: 644px) or to enormous ones
+ * (L'Express: 8000px, several MB). These two CDNs resize on demand, so we ask
+ * for a sensible size instead. Other hosts are left untouched.
+ */
+function normalizeImageUrl(url: string): string {
+  if (url.startsWith('https://img.lemde.fr/')) {
+    return url.replace('/644/322/60/0/', '/1288/644/70/0/');
+  }
+  if (url.startsWith('https://www.lexpress.fr/resizer/')) {
+    return url.replace(/([?&])width=\d+/, '$1width=1200').replace(/([?&])height=\d+/, '$1height=675');
+  }
+  return url;
+}
+
+/** Thumbnail of an RSS item: media:content, media:thumbnail, an image enclosure, or the first <img> of the description. */
+function imageOf(item: string): string | undefined {
+  const tags = item.match(/<(?:media:content|media:thumbnail|enclosure)\b[^>]*>/gi) ?? [];
+  for (const tag of tags) {
+    const url = tag.match(/\burl="([^"]+)"/i)?.[1];
+    const type = tag.match(/\btype="([^"]+)"/i)?.[1] ?? '';
+    if (!url || /^(video|audio)\//i.test(type)) continue;
+    const looksLikeImage =
+      /^image\//i.test(type) ||
+      /\.(jpe?g|png|webp|avif)(\?|$)/i.test(url) ||
+      /^<media:thumbnail/i.test(tag);
+    const clean = decodeEntities(url);
+    if (looksLikeImage && /^https:\/\//i.test(clean)) return normalizeImageUrl(clean);
+  }
+  // Some feeds (Numerama) only put the picture inside the HTML body.
+  const body = tagContent(item, 'description') + tagContent(item, 'content:encoded');
+  const html = decodeEntities(body.replace(/<!\[CDATA\[|\]\]>/g, ''));
+  const inline = html.match(/<img[^>]+src=["'](https:\/\/[^"']+)["']/i)?.[1];
+  return inline ? normalizeImageUrl(inline) : undefined;
+}
+
 function parseRss(xml: string, feed: Feed): Article[] {
   const articles: Article[] = [];
   const items = xml.match(/<item[\s>][\s\S]*?<\/item>/gi) ?? [];
@@ -173,6 +238,7 @@ function parseRss(xml: string, feed: Feed): Article[] {
       title,
       description: cleanText(tagContent(item, 'description')),
       url,
+      image: imageOf(item),
       publishedAt,
       categoryHint: feed.category,
     });
@@ -195,8 +261,9 @@ async function fetchFeed(feed: Feed): Promise<Article[]> {
 /* ---------- Grouping articles about the same event into stories ---------- */
 
 /** A story needs this many distinct outlets, otherwise there is no "perspective" to compare. */
-const MIN_OUTLETS_PER_STORY = 3;
-const MAX_STORIES = 24;
+/** Two outlets are enough to compare two perspectives. */
+const MIN_OUTLETS_PER_STORY = 2;
+const MAX_STORIES = 60;
 /** Two articles are linked when they share at least this many distinctive words... */
 const MIN_SHARED_TOKENS = 2;
 /** ...and either those words are rare enough (sum of IDF weights)... */
@@ -381,7 +448,8 @@ export function buildStories(articles: Article[]): Story[] {
       .map(([token]) => token);
   };
   const keepOnTopic = (group: Doc[]) => {
-    if (group.length < MIN_OUTLETS_PER_STORY) return group;
+    // Tiny groups are kept as they are: there is not enough text to find anchor words.
+    if (group.length < 4) return group;
     const anchors = anchorsOf(group);
     // Big groups chain more easily, so they must match more anchors.
     const required = group.length >= 12 ? MIN_ANCHORS_PER_ARTICLE + 1 : MIN_ANCHORS_PER_ARTICLE;
@@ -531,8 +599,10 @@ export type NewsResult = {
   failedFeeds: number;
   totalFeeds: number;
   grouping?: 'ai' | 'heuristic';
-  /** Rubriques actuellement utilisées (le serveur peut en ajouter ou en retirer). */
+  /** Rubriques créées jusqu'ici : le serveur en ajoute, il n'en retire jamais. */
   categories?: Category[];
+  /** Server clock when this answer was built: send it back as `since` to get only what changed. */
+  serverTime?: number;
 };
 
 /** Reads every feed and returns the articles, without grouping them. */
@@ -569,7 +639,7 @@ export async function loadStoriesFromFeeds(): Promise<NewsResult> {
  * Browsers block cross-origin reads of most RSS feeds (no CORS headers), so on
  * web the feeds go through our own /api/news route instead.
  */
-export async function fetchStories(): Promise<NewsResult> {
+export async function fetchStories(since?: number): Promise<NewsResult> {
   // Web uses its own origin. A native build can point to a deployed server
   // (EXPO_PUBLIC_API_URL) to get the AI grouping; without it, it reads the
   // feeds itself and groups them with the heuristic.
@@ -577,9 +647,124 @@ export async function fetchStories(): Promise<NewsResult> {
     process.env.EXPO_OS === 'web' ? '' : (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/$/, '');
   if (process.env.EXPO_OS !== 'web' && !base) return loadStoriesFromFeeds();
 
-  const response = await fetch(`${base}/api/news`);
+  const response = await fetch(`${base}/api/news${since ? `?since=${since}` : ''}`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as NewsResult;
+}
+
+type TokenIndex = { tokens: Map<string, Set<string>>; idf: Map<string, number> };
+
+/** Significant words of every article, and how rare each word is across the whole feed. */
+function buildTokenIndex(stories: Story[]): TokenIndex {
+  const tokens = new Map<string, Set<string>>();
+  const frequency = new Map<string, number>();
+  for (const story of stories) {
+    for (const article of story.articles) {
+      if (tokens.has(article.url)) continue;
+      const words = new Set(tokenize(`${article.title} ${article.description}`));
+      tokens.set(article.url, words);
+      words.forEach(word => frequency.set(word, (frequency.get(word) ?? 0) + 1));
+    }
+  }
+  const idf = new Map<string, number>();
+  frequency.forEach((n, word) => idf.set(word, Math.log((tokens.size + 1) / (n + 1))));
+  return { tokens, idf };
+}
+
+/**
+ * Removes from a story the articles that are not about its subject.
+ *
+ * The subject is made of the few words that identify the story: words that
+ * come back in many of its articles and that are rare in the rest of the feed
+ * ("Toulon", "drone"; not "militaire" or "base", which any other story can
+ * contain). An article must contain at least one of them. This cleans stories
+ * contaminated earlier, wherever they were stored. AI-made topics are left
+ * alone: their articles were chosen by the model, and a broad topic legitimately
+ * gathers articles with very different wording.
+ */
+export function pruneOffTopic(story: Story, index: TokenIndex): Story {
+  if (story.aiGrouped || story.articles.length < 4) return story;
+
+  const words = story.articles.map(article => index.tokens.get(article.url) ?? new Set<string>());
+  const counts = new Map<string, number>();
+  words.forEach(set => set.forEach(word => counts.set(word, (counts.get(word) ?? 0) + 1)));
+
+  const minCount = Math.max(2, Math.ceil(story.articles.length * 0.4));
+  const anchors = [...counts.entries()]
+    .filter(([, n]) => n >= minCount)
+    .sort((x, y) => (index.idf.get(y[0]) ?? 0) * y[1] - (index.idf.get(x[0]) ?? 0) * x[1])
+    .slice(0, 3)
+    .map(([word]) => word);
+  if (anchors.length < 2) return story; // not enough to judge
+
+  const kept = story.articles.filter((_, i) => anchors.some(word => words[i].has(word)));
+  const outlets = new Set(kept.map(article => article.outlet.name)).size;
+  return kept.length < story.articles.length && outlets >= 2 ? { ...story, articles: kept } : story;
+}
+
+/** The feed keeps its history this long, on the server and in the app. */
+export const ARCHIVE_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_ARTICLES_PER_STORY = 16;
+
+/**
+ * Feed-like merge: stories already known stay (title, rubric and picture
+ * frozen), new articles are added to them, new stories are appended. A story
+ * only leaves once its latest article is older than ARCHIVE_MS. Two stories are
+ * "the same" when they share an article, so ids may change between grouping runs.
+ */
+export function mergeStories(previous: Story[], incoming: Story[], now = Date.now()) {
+  const merged = previous.map(story => ({ ...story }));
+  const added: string[] = [];
+
+  for (const story of incoming) {
+    const urls = new Set(story.articles.map(article => article.url));
+    let best = -1;
+    let bestOverlap = 0;
+    merged.forEach((existing, index) => {
+      const overlap = existing.articles.filter(article => urls.has(article.url)).length;
+      // One shared article is not enough: a "bridge" article (a PSG coach asked about
+      // the riots) would pull a whole other subject into the story. Both stories must
+      // really overlap: half of the smaller one, and at least two articles.
+      const smaller = Math.min(existing.articles.length, story.articles.length);
+      const sameSubject = overlap >= 2 ? overlap / smaller >= 0.5 : overlap === smaller;
+      if (sameSubject && overlap > bestOverlap) {
+        best = index;
+        bestOverlap = overlap;
+      }
+    });
+
+    if (best >= 0) {
+      let existing = merged[best];
+      // A picture found later fills a story that had none.
+      if (!existing.image && story.image) {
+        existing = { ...existing, image: story.image, thumb: story.thumb ?? existing.thumb, imageChecked: true };
+      }
+      const known = new Set(existing.articles.map(article => article.url));
+      const extra = story.articles.filter(article => !known.has(article.url));
+      if (extra.length > 0) {
+        existing = {
+          ...existing,
+          articles: [...existing.articles, ...extra]
+            .sort((a, b) => b.publishedAt - a.publishedAt)
+            .slice(0, MAX_ARTICLES_PER_STORY),
+          publishedAt: Math.max(existing.publishedAt, story.publishedAt),
+          updatedAt: now,
+        };
+      }
+      merged[best] = existing;
+    } else {
+      // Same id but a different subject (heuristic ids can collide): keep both.
+      const id = merged.some(existing => existing.id === story.id)
+        ? `${story.id}-${merged.length}`
+        : story.id;
+      merged.push({ ...story, id, updatedAt: story.updatedAt ?? now });
+      added.push(id);
+    }
+  }
+
+  const kept = merged.filter(story => now - story.publishedAt <= ARCHIVE_MS);
+  const index = buildTokenIndex(kept);
+  return { stories: kept.map(story => pruneOffTopic(story, index)), added };
 }
 
 export function timeAgo(timestamp: number, now = Date.now()): string {
