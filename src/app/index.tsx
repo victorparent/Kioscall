@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Image as ExpoImage } from 'expo-image';
 import { openBrowserAsync } from 'expo-web-browser';
-import { type ComponentProps, useEffect, useMemo, useState } from 'react';
+import { type ComponentProps, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -21,12 +21,14 @@ import { LeadCard, StoryRow } from '@/components/news/story-cards';
 import { StoryDetail } from '@/components/news/story-detail';
 import { COLORS, MAX_WIDTH } from '@/components/news/theme';
 import { useNews } from '@/hooks/use-news';
+import { useReadingState } from '@/hooks/use-reading-state';
 import type { Story } from '@/lib/news';
 import {
   formatClock,
   formatToday,
   pickLead,
   sectionize,
+  storyStatus,
   uniqueOutlets,
 } from '@/lib/story-utils';
 
@@ -46,6 +48,7 @@ export default function HomeScreen() {
     stories,
     newIds,
     categories: serverCategories,
+    aiAvailable,
     loading,
     refreshing,
     error,
@@ -57,8 +60,10 @@ export default function HomeScreen() {
   const [selectedCategory, setSelectedCategory] = useState(ALL_CATEGORY.name);
   const [search, setSearch] = useState('');
   const [selectedStory, setSelectedStory] = useState<Story | null>(null);
-  // Saved stories keep a snapshot so they survive feed refreshes.
-  const [saved, setSaved] = useState<Story[]>([]);
+  /** Time of the latest article already seen when the story was opened: newer ones get marked. */
+  const [freshAfter, setFreshAfter] = useState<number | undefined>(undefined);
+  // Saved stories, what was read and the last visit are kept on the device.
+  const { saved, isSaved, toggleSaved, read, markRead, baseline } = useReadingState(stories);
 
   const categories = useMemo(() => [ALL_CATEGORY, ...serverCategories], [serverCategories]);
   // The server can retire a rubric: fall back to everything if the chosen one is gone.
@@ -66,14 +71,15 @@ export default function HomeScreen() {
     ? selectedCategory
     : ALL_CATEGORY.name;
 
-  const isSaved = (id: string) => saved.some(story => story.id === id);
+  const statusOf = useCallback(
+    (story: Story) => storyStatus(story, read, baseline, newIds),
+    [read, baseline, newIds]
+  );
 
-  function toggleSaved(story: Story) {
-    setSaved(current =>
-      current.some(item => item.id === story.id)
-        ? current.filter(item => item.id !== story.id)
-        : [story, ...current]
-    );
+  function openStory(story: Story) {
+    setFreshAfter(read[story.id]?.latest);
+    markRead(story);
+    setSelectedStory(story);
   }
 
   async function openArticle(url: string) {
@@ -136,8 +142,8 @@ export default function HomeScreen() {
         key={story.id}
         story={story}
         saved={isSaved(story.id)}
-        isNew={newIds.has(story.id)}
-        onPress={() => setSelectedStory(story)}
+        status={statusOf(story)}
+        onPress={() => openStory(story)}
         onToggleSave={() => toggleSaved(story)}
       />
     );
@@ -153,6 +159,8 @@ export default function HomeScreen() {
           onBack={() => setSelectedStory(null)}
           onToggleSave={() => toggleSaved(selectedStory)}
           onOpenArticle={openArticle}
+          canCompare={aiAvailable}
+          freshAfter={freshAfter}
         />
       </SafeAreaView>
     );
@@ -296,8 +304,8 @@ export default function HomeScreen() {
                   <LeadCard
                     story={lead}
                     saved={isSaved(lead.id)}
-                    isNew={newIds.has(lead.id)}
-                    onPress={() => setSelectedStory(lead)}
+                    status={statusOf(lead)}
+                    onPress={() => openStory(lead)}
                     onToggleSave={() => toggleSaved(lead)}
                   />
                 )}
@@ -322,7 +330,7 @@ export default function HomeScreen() {
               {trending.map(story => (
                 <Pressable
                   key={story.id}
-                  onPress={() => setSelectedStory(story)}
+                  onPress={() => openStory(story)}
                   accessibilityRole="button"
                   style={styles.trendingRow}
                 >
@@ -357,7 +365,7 @@ export default function HomeScreen() {
               <View style={styles.dateBlock}>
                 <Text style={styles.date}>Enregistrés</Text>
                 <Text style={styles.status}>
-                  {saved.length} sujet{saved.length > 1 ? 's' : ''} · gardés pour cette session
+                  {saved.length} sujet{saved.length > 1 ? 's' : ''} · gardés sur cet appareil
                 </Text>
               </View>
               {saved.map(renderRow)}

@@ -3,13 +3,13 @@ import { Image as ExpoImage } from 'expo-image';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Story } from '@/lib/news';
-import { relativeTime, storyImage, storyThumb, uniqueOutlets } from '@/lib/story-utils';
+import { relativeTime, storyImage, storyThumb, type StoryStatus, uniqueOutlets } from '@/lib/story-utils';
 import { COLORS } from './theme';
 
 type CardProps = {
   story: Story;
   saved: boolean;
-  isNew: boolean;
+  status: StoryStatus;
   onPress: () => void;
   onToggleSave: () => void;
 };
@@ -31,6 +31,19 @@ function SourceDots({ story }: { story: Story }) {
       ))}
     </View>
   );
+}
+
+/** "NOUVEAU" for a story that appeared since the last visit, "+2 articles" for one already read that grew. */
+function StatusBadge({ status }: { status: StoryStatus }) {
+  if (status.kind === 'new') return <Text style={styles.newText}>NOUVEAU</Text>;
+  if (status.kind === 'updated') {
+    return (
+      <Text style={styles.updatedText}>
+        +{status.fresh} article{status.fresh > 1 ? 's' : ''}
+      </Text>
+    );
+  }
+  return null;
 }
 
 function sourcesLabel(story: Story) {
@@ -57,7 +70,7 @@ function SaveButton({ saved, onPress, light }: { saved: boolean; onPress: () => 
 }
 
 /** The most covered story of the moment, as a large picture card. */
-export function LeadCard({ story, saved, isNew, onPress, onToggleSave }: CardProps) {
+export function LeadCard({ story, saved, status, onPress, onToggleSave }: CardProps) {
   const image = storyImage(story);
   return (
     <View style={styles.lead}>
@@ -76,7 +89,7 @@ export function LeadCard({ story, saved, isNew, onPress, onToggleSave }: CardPro
             <Ionicons name="flame" size={13} color={COLORS.bg} />
             <Text style={styles.leadBadgeText}>Le sujet du moment</Text>
           </View>
-          {isNew && <Text style={styles.newText}>NOUVEAU</Text>}
+          <StatusBadge status={status} />
         </View>
         <Text style={styles.leadTitle} numberOfLines={4}>
           {story.title}
@@ -98,7 +111,7 @@ export function LeadCard({ story, saved, isNew, onPress, onToggleSave }: CardPro
 }
 
 /** A dense feed row: text on the left, thumbnail on the right. */
-export function StoryRow({ story, saved, isNew, onPress, onToggleSave }: CardProps) {
+export function StoryRow({ story, saved, status, onPress, onToggleSave }: CardProps) {
   const image = storyThumb(story);
   return (
     <View style={styles.row}>
@@ -111,10 +124,10 @@ export function StoryRow({ story, saved, isNew, onPress, onToggleSave }: CardPro
       <View style={styles.rowBody}>
         <View style={styles.rowMeta}>
           <Text style={styles.rowCategory}>{story.category}</Text>
-          {isNew && <Text style={styles.newText}>NOUVEAU</Text>}
+          <StatusBadge status={status} />
           <Text style={styles.rowTime}>· {relativeTime(story.publishedAt)}</Text>
         </View>
-        <Text style={styles.rowTitle} numberOfLines={4}>
+        <Text style={[styles.rowTitle, status.kind === 'read' && styles.rowTitleRead]} numberOfLines={4}>
           {story.title}
         </Text>
         <View style={styles.rowFooter}>
@@ -148,6 +161,7 @@ const styles = StyleSheet.create({
   dotText: { color: '#151520', fontSize: 10, fontWeight: '900' },
   saveButton: { padding: 2 },
   newText: { color: COLORS.success, fontSize: 11, fontWeight: '800', letterSpacing: 0.6 },
+  updatedText: { color: COLORS.accent, fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
 
   lead: {
     height: 300,
@@ -186,6 +200,8 @@ const styles = StyleSheet.create({
   rowTime: { color: COLORS.muted, fontSize: 12 },
   rowTitle: { color: COLORS.text, fontSize: 18, lineHeight: 24, fontWeight: '700', letterSpacing: -0.2 },
   rowFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
+  // Already read: the title is dimmed, so the eye goes to what has not been seen.
+  rowTitleRead: { color: COLORS.muted },
   rowSources: { color: COLORS.muted, fontSize: 13 },
   rowImage: { width: 104, height: 104, borderRadius: 14, backgroundColor: COLORS.surfaceRaised },
 });

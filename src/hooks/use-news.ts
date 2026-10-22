@@ -34,6 +34,8 @@ export function useNews() {
   const [newIds, setNewIds] = useState<Set<string>>(new Set());
   const storiesRef = useRef<Story[]>([]);
   const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
+  /** True when the server groups with Claude: the "compare the angles" feature then exists. */
+  const [aiAvailable, setAiAvailable] = useState(false);
   const categoriesRef = useRef<Category[]>(DEFAULT_CATEGORIES);
   /** Server time of the last answer: asking "since" then returns only what changed. */
   const sinceRef = useRef<number | undefined>(undefined);
@@ -80,6 +82,7 @@ export function useNews() {
       setStories(merged);
       setNewIds(firstLoad ? new Set() : new Set(added));
       addCategories(result.categories ?? []);
+      if (result.grouping) setAiAvailable(result.grouping === 'ai');
       if (result.serverTime) sinceRef.current = result.serverTime;
       persist();
       setUpdatedAt(Date.now());
@@ -134,5 +137,5 @@ export function useNews() {
     };
   }, [load, addCategories]);
 
-  return { stories, newIds, categories, loading, refreshing, error, updatedAt, refresh };
+  return { stories, newIds, categories, aiAvailable, loading, refreshing, error, updatedAt, refresh };
 }

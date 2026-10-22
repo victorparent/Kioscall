@@ -8,9 +8,11 @@ import {
   formatDateTime,
   groupByOutlet,
   relativeTime,
+  shortenText,
   storyImage,
   uniqueOutlets,
 } from '@/lib/story-utils';
+import { PerspectivesCard } from './perspectives-card';
 import { COLORS, MAX_WIDTH } from './theme';
 
 type Props = {
@@ -19,6 +21,10 @@ type Props = {
   onBack: () => void;
   onToggleSave: () => void;
   onOpenArticle: (url: string) => void;
+  /** The server uses Claude: offer the "compare the angles" card. */
+  canCompare: boolean;
+  /** Time of the latest article the reader had already seen: newer ones are marked. */
+  freshAfter?: number;
 };
 
 type Mode = 'outlet' | 'time';
@@ -26,10 +32,12 @@ type Mode = 'outlet' | 'time';
 function ArticleRow({
   article,
   showOutlet,
+  isFresh,
   onPress,
 }: {
   article: Article;
   showOutlet: boolean;
+  isFresh: boolean;
   onPress: () => void;
 }) {
   return (
@@ -49,8 +57,16 @@ function ArticleRow({
           </View>
         )}
         <Text style={styles.articleTitle}>{article.title}</Text>
+        {article.description ? (
+          <Text style={styles.articleDescription} numberOfLines={3}>
+            {article.description}
+          </Text>
+        ) : null}
         <View style={styles.articleFooter}>
-          <Text style={styles.articleDate}>{formatDateTime(article.publishedAt)}</Text>
+          <Text style={styles.articleDate}>
+            {isFresh ? <Text style={styles.articleFresh}>NOUVEAU  </Text> : null}
+            {formatDateTime(article.publishedAt)}
+          </Text>
           <Text style={styles.articleRead}>Lire</Text>
           <Ionicons name="open-outline" size={14} color={COLORS.accent} />
         </View>
@@ -62,7 +78,7 @@ function ArticleRow({
   );
 }
 
-export function StoryDetail({ story, saved, onBack, onToggleSave, onOpenArticle }: Props) {
+export function StoryDetail({ story, saved, onBack, onToggleSave, onOpenArticle, canCompare, freshAfter }: Props) {
   const [mode, setMode] = useState<Mode>('outlet');
   const image = storyImage(story);
   const lead = story.articles.find(article => article.description);
@@ -128,12 +144,14 @@ export function StoryDetail({ story, saved, onBack, onToggleSave, onOpenArticle 
         {lead && (
           <View style={styles.essential}>
             <Text style={styles.essentialLabel}>L’ESSENTIEL</Text>
-            <Text style={styles.essentialText}>{lead.description}</Text>
+            <Text style={styles.essentialText}>{shortenText(lead.description)}</Text>
             <Text style={styles.essentialSource}>
               {lead.outlet.name} · {formatDateTime(lead.publishedAt)}
             </Text>
           </View>
         )}
+
+        {canCompare && outletCount >= 2 && <PerspectivesCard story={story} outlets={uniqueOutlets(story)} />}
 
         <Text style={styles.sectionTitle}>Les points de vue</Text>
         <Text style={styles.sectionSub}>
@@ -176,6 +194,7 @@ export function StoryDetail({ story, saved, onBack, onToggleSave, onOpenArticle 
                     key={article.url}
                     article={article}
                     showOutlet={false}
+                    isFresh={freshAfter !== undefined && article.publishedAt > freshAfter}
                     onPress={() => onOpenArticle(article.url)}
                   />
                 ))}
@@ -186,6 +205,7 @@ export function StoryDetail({ story, saved, onBack, onToggleSave, onOpenArticle 
                 key={article.url}
                 article={article}
                 showOutlet
+                isFresh={freshAfter !== undefined && article.publishedAt > freshAfter}
                 onPress={() => onOpenArticle(article.url)}
               />
             ))}
@@ -273,8 +293,10 @@ const styles = StyleSheet.create({
   articleOutlet: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   articleOutletName: { color: COLORS.textSecondary, fontSize: 13, fontWeight: '700' },
   articleTitle: { color: COLORS.text, fontSize: 16, lineHeight: 22, fontWeight: '600' },
+  articleDescription: { color: COLORS.textSecondary, fontSize: 14, lineHeight: 20 },
   articleFooter: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   articleDate: { color: COLORS.muted, fontSize: 13, flex: 1 },
+  articleFresh: { color: COLORS.success, fontWeight: '800', letterSpacing: 0.5 },
   articleRead: { color: COLORS.accent, fontSize: 13, fontWeight: '700' },
   articleImage: { width: 72, height: 72, borderRadius: 12, backgroundColor: COLORS.surfaceRaised },
   aiNote: { color: COLORS.muted, fontSize: 12, lineHeight: 18, marginTop: 28 },

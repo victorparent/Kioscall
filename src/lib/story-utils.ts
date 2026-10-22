@@ -37,6 +37,15 @@ export function relativeTime(timestamp: number, now = Date.now()): string {
   return `il y a ${Math.round(hours / 24)} j`;
 }
 
+/** Shortens a long chapô at a sentence end when possible ("…" otherwise). */
+export function shortenText(text: string, max = 320): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const sentenceEnd = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
+  if (sentenceEnd > max * 0.5) return cut.slice(0, sentenceEnd + 1);
+  return `${cut.slice(0, cut.lastIndexOf(' '))}…`;
+}
+
 export function uniqueOutlets(story: Story): Outlet[] {
   const seen = new Map<string, Outlet>();
   story.articles.forEach(article => seen.set(article.outlet.name, article.outlet));
@@ -90,6 +99,33 @@ export function pickLead(stories: Story[], now = Date.now()): Story | undefined 
     }
   }
   return best;
+}
+
+/** What the reader has already seen of a story: the time of its latest article when it was opened. */
+export type ReadEntry = { latest: number; at: number };
+export type ReadMap = Record<string, ReadEntry>;
+
+/**
+ * - new: never opened and it appeared since the last visit
+ * - updated: already opened, but it received articles since
+ * - read: opened, nothing new
+ * - unread: never opened, but it was there before the last visit
+ */
+export type StoryStatus = { kind: 'new' | 'updated' | 'read' | 'unread'; fresh: number };
+
+export function storyStatus(
+  story: Story,
+  read: ReadMap,
+  baseline: number | null,
+  arrivedThisSession?: Set<string>
+): StoryStatus {
+  const entry = read[story.id];
+  if (entry) {
+    const fresh = story.articles.filter(article => article.publishedAt > entry.latest).length;
+    return fresh > 0 ? { kind: 'updated', fresh } : { kind: 'read', fresh: 0 };
+  }
+  const isNew = (baseline !== null && story.publishedAt > baseline) || !!arrivedThisSession?.has(story.id);
+  return { kind: isNew ? 'new' : 'unread', fresh: 0 };
 }
 
 export type Section = { label: string; items: Story[] };

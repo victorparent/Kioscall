@@ -73,6 +73,15 @@ export const CATEGORY_EMOJI: Record<string, string> = {
 /** `category` is a hint from thematic feeds; general feeds have none and are classified through the story they join. */
 export type Category = { name: string; emoji: string };
 
+/** "Compare the angles": what a story's outlets agree on, and what each one puts forward. */
+export type Perspectives = {
+  common: string[];
+  /** `quote` is the exact passage of the outlet's article the angle relies on (checked by the server). */
+  angles: { outlet: string; angle: string; quote: string }[];
+  /** Why the comparison is limited, when it is. */
+  note: string;
+};
+
 /** Rubriques de départ. Le serveur peut en ajouter d'autres (voir news-ai.ts). */
 export const DEFAULT_CATEGORIES: Category[] = Object.entries(CATEGORY_EMOJI).map(
   ([name, emoji]) => ({ name, emoji })
@@ -264,8 +273,8 @@ async function fetchFeed(feed: Feed): Promise<Article[]> {
 /** Two outlets are enough to compare two perspectives. */
 const MIN_OUTLETS_PER_STORY = 2;
 const MAX_STORIES = 60;
-/** Two articles are linked when they share at least this many distinctive words... */
-const MIN_SHARED_TOKENS = 2;
+/** Precision over quantity: two articles are linked only when they share at least this many distinctive words... */
+const MIN_SHARED_TOKENS = 3;
 /** ...and either those words are rare enough (sum of IDF weights)... */
 const LINK_SCORE = 12;
 /** ...a two-word expression ("17 octobre") shared by a limited number of articles adds weight. */
@@ -277,7 +286,7 @@ const MAX_GROUP_SIZE = 40;
 const MAX_STORY_SIZE = 80;
 /** A story is characterised by its top anchor words; an article stays only if it contains enough of them. */
 const ANCHOR_COUNT = 5;
-const MIN_ANCHORS_PER_ARTICLE = 2;
+const MIN_ANCHORS_PER_ARTICLE = 3;
 /** Groups sharing a two-word expression used by at least this many articles ("17 octobre") are facets of one broad subject. */
 const UMBRELLA_MIN_DF = 12;
 const FALLBACK_CATEGORY = 'Société';
@@ -639,18 +648,32 @@ export async function loadStoriesFromFeeds(): Promise<NewsResult> {
  * Browsers block cross-origin reads of most RSS feeds (no CORS headers), so on
  * web the feeds go through our own /api/news route instead.
  */
+/**
+ * Where our server lives: the web app's own origin, or EXPO_PUBLIC_API_URL for
+ * a native build. null = no server (a native build reading the feeds itself).
+ */
+export function apiBase(): string | null {
+  if (process.env.EXPO_OS === 'web') return '';
+  const url = (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/$/, '');
+  return url || null;
+}
+
 export async function fetchStories(since?: number): Promise<NewsResult> {
-  // Web uses its own origin. A native build can point to a deployed server
-  // (EXPO_PUBLIC_API_URL) to get the AI grouping; without it, it reads the
-  // feeds itself and groups them with the heuristic.
-  const base =
-    process.env.EXPO_OS === 'web' ? '' : (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/$/, '');
-  if (process.env.EXPO_OS !== 'web' && !base) return loadStoriesFromFeeds();
+  // Without a server, read the feeds directly and group them with the heuristic.
+  const base = apiBase();
+  if (base === null) return loadStoriesFromFeeds();
 
   const response = await fetch(`${base}/api/news${since ? `?since=${since}` : ''}`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as NewsResult;
 }
+
+/** Precision over quantity: an article stays in a story only if it shares this many significant words with the story's title and summary. */
+const MIN_SHARED_WITH_SUBJECT = 3;
+/** Words more common than this (IDF below it) are too generic to prove two articles are about the same thing. */
+const MIN_WORD_IDF = 2;
+/** From this size a story is a broad subject: its title names one facet, so the words shared by the whole story count too. */
+const BROAD_STORY_SIZE = 6;
 
 type TokenIndex = { tokens: Map<string, Set<string>>; idf: Map<string, number> };
 
@@ -674,32 +697,107 @@ function buildTokenIndex(stories: Story[]): TokenIndex {
 /**
  * Removes from a story the articles that are not about its subject.
  *
- * The subject is made of the few words that identify the story: words that
- * come back in many of its articles and that are rare in the rest of the feed
- * ("Toulon", "drone"; not "militaire" or "base", which any other story can
- * contain). An article must contain at least one of them. This cleans stories
- * contaminated earlier, wherever they were stored. AI-made topics are left
- * alone: their articles were chosen by the model, and a broad topic legitimately
- * gathers articles with very different wording.
+ * What the story is about is what it says: its title and summary. An article
+ * must share at least three significant words with them. Generic words
+ * ("france", "novembre", "militaire") are not counted: any unrelated article
+ * can contain them. This cleans stories contaminated earlier, wherever they
+ * were stored. A story left with fewer than two outlets is not a story any
+ * more and is dropped. AI-made topics are left alone: their articles were
+ * chosen by the model, and a broad topic legitimately gathers articles with
+ * very different wording.
  */
-export function pruneOffTopic(story: Story, index: TokenIndex): Story {
-  if (story.aiGrouped || story.articles.length < 4) return story;
+export function pruneOffTopic(story: Story, index: TokenIndex): Story | null {
+  if (story.aiGrouped || story.articles.length < 3) return story;
 
-  const words = story.articles.map(article => index.tokens.get(article.url) ?? new Set<string>());
-  const counts = new Map<string, number>();
-  words.forEach(set => set.forEach(word => counts.set(word, (counts.get(word) ?? 0) + 1)));
+  const wordsOf = (article: Article) => index.tokens.get(article.url) ?? new Set<string>();
+  const sharedWith = (words: Set<string>, reference: Iterable<string>) => {
+    let shared = 0;
+    for (const word of reference) if (words.has(word)) shared += 1;
+    return shared;
+  };
 
-  const minCount = Math.max(2, Math.ceil(story.articles.length * 0.4));
-  const anchors = [...counts.entries()]
-    .filter(([, n]) => n >= minCount)
-    .sort((x, y) => (index.idf.get(y[0]) ?? 0) * y[1] - (index.idf.get(x[0]) ?? 0) * x[1])
-    .slice(0, 3)
-    .map(([word]) => word);
-  if (anchors.length < 2) return story; // not enough to judge
+  const subject = new Set(
+    tokenize(`${story.title} ${story.summary}`).filter(word => (index.idf.get(word) ?? Infinity) >= MIN_WORD_IDF)
+  );
 
-  const kept = story.articles.filter((_, i) => anchors.some(word => words[i].has(word)));
+  // Broad subjects ("the 17 October riots") have a title about one facet: the
+  // words most articles of the story have in common identify them better.
+  let common: string[] = [];
+  if (story.articles.length >= BROAD_STORY_SIZE) {
+    const counts = new Map<string, number>();
+    story.articles.forEach(article => wordsOf(article).forEach(word => counts.set(word, (counts.get(word) ?? 0) + 1)));
+    const minCount = Math.ceil(story.articles.length * 0.4);
+    common = [...counts.entries()]
+      .filter(([word, n]) => n >= minCount && (index.idf.get(word) ?? 0) >= MIN_WORD_IDF)
+      .sort((x, y) => (index.idf.get(y[0]) ?? 0) * y[1] - (index.idf.get(x[0]) ?? 0) * x[1])
+      .slice(0, 4)
+      .map(([word]) => word);
+  }
+
+  const kept = story.articles.filter(article => {
+    const words = wordsOf(article);
+    return (
+      sharedWith(words, subject) >= MIN_SHARED_WITH_SUBJECT ||
+      (common.length >= MIN_SHARED_WITH_SUBJECT && sharedWith(words, common) >= MIN_SHARED_WITH_SUBJECT)
+    );
+  });
+
+  if (kept.length === story.articles.length) return story;
   const outlets = new Set(kept.map(article => article.outlet.name)).size;
-  return kept.length < story.articles.length && outlets >= 2 ? { ...story, articles: kept } : story;
+  return outlets >= MIN_OUTLETS_PER_STORY ? { ...story, articles: kept } : null;
+}
+
+/**
+ * Two stories about the same subject must not sit side by side (two "PSG-Barça"
+ * cards). They are the same story when their titles share three significant
+ * words and they have an article in common, or four rare words even without
+ * one. The larger story keeps its title and absorbs the other.
+ */
+function mergeDuplicates(stories: Story[], index: TokenIndex, now: number): Story[] {
+  const result: Story[] = [];
+  const titleWords = new Map<Story, Set<string>>();
+  const wordsOf = (story: Story) => {
+    if (!titleWords.has(story)) titleWords.set(story, new Set(tokenize(story.title)));
+    return titleWords.get(story) as Set<string>;
+  };
+
+  for (const story of [...stories].sort((a, b) => b.articles.length - a.articles.length)) {
+    const urls = new Set(story.articles.map(article => article.url));
+    const words = wordsOf(story);
+
+    const twin = result.find(other => {
+      const overlap = other.articles.filter(article => urls.has(article.url)).length;
+      let shared = 0;
+      let rare = 0;
+      wordsOf(other).forEach(word => {
+        if (!words.has(word)) return;
+        shared += 1;
+        if ((index.idf.get(word) ?? 0) >= MIN_WORD_IDF) rare += 1;
+      });
+      return (overlap >= 1 && shared >= 3) || rare >= 4;
+    });
+
+    if (!twin) {
+      result.push(story);
+      continue;
+    }
+    const known = new Set(twin.articles.map(article => article.url));
+    const extra = story.articles.filter(article => !known.has(article.url));
+    const position = result.indexOf(twin);
+    result[position] = {
+      ...twin,
+      articles: [...twin.articles, ...extra]
+        .sort((a, b) => b.publishedAt - a.publishedAt)
+        .slice(0, MAX_ARTICLES_PER_STORY),
+      publishedAt: Math.max(twin.publishedAt, story.publishedAt),
+      updatedAt: extra.length > 0 ? now : twin.updatedAt,
+      image: twin.image ?? story.image,
+      thumb: twin.thumb ?? story.thumb,
+      imageChecked: twin.imageChecked || story.imageChecked,
+    };
+    titleWords.set(result[position], wordsOf(twin));
+  }
+  return result;
 }
 
 /** The feed keeps its history this long, on the server and in the app. */
@@ -764,7 +862,10 @@ export function mergeStories(previous: Story[], incoming: Story[], now = Date.no
 
   const kept = merged.filter(story => now - story.publishedAt <= ARCHIVE_MS);
   const index = buildTokenIndex(kept);
-  return { stories: kept.map(story => pruneOffTopic(story, index)), added };
+  const distinct = mergeDuplicates(kept, index, now);
+  const clean = distinct.map(story => pruneOffTopic(story, index)).filter((story): story is Story => story !== null);
+  const ids = new Set(clean.map(story => story.id));
+  return { stories: clean, added: added.filter(id => ids.has(id)) };
 }
 
 export function timeAgo(timestamp: number, now = Date.now()): string {

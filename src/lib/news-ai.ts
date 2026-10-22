@@ -32,10 +32,13 @@ import {
 const MODEL = process.env.NEWS_GROUPING_MODEL ?? 'claude-haiku-5-5';
 
 /** Server-side refusal fallback: not available on Haiku, so only the larger models get it. */
-const FALLBACK_PARAMS = MODEL.includes('haiku')
-  ? {}
-  : { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const };
+const FALLBACK_FOR_LARGER_MODELS = {
+  betas: ['server-side-fallback-2026-07-01'],
+  fallbacks: 'default' as const,
+};
 
+/** A grouping call takes about 40 s with Haiku; beyond this it is considered stuck. */
+const CALL_TIMEOUT_MS = 150_000;
 const SWEEP_MS = 60 * 60 * 1000;
 /** Recent news: what Claude is asked to group, and how long ungrouped articles are kept. */
 const ACTIVE_MS = 48 * 60 * 60 * 1000;
@@ -55,8 +58,28 @@ const MAX_IMAGE_CHECKS_PER_REFRESH = 80;
 const MAX_CATEGORIES = 20;
 const MIN_TOPICS_FOR_NEW_CATEGORY = 2;
 const FALLBACK_CATEGORY = 'Société';
+
+/** Comparable form of a rubric name: no case, accents or plural ("Sports" = "Sport"). */
+function rubricKey(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(word => word.replace(/s$/, ''))
+    .join(' ');
+}
+
+/** Two rubric names that mean the same thing: same key, or one starts with the other ("Santé" / "Santé et bien-être"). */
+function similarRubric(a: string, b: string): boolean {
+  const x = rubricKey(a);
+  const y = rubricKey(b);
+  return x === y || (Math.min(x.length, y.length) >= 4 && (x.startsWith(y) || y.startsWith(x)));
+}
 /** Where the server remembers its topics. Tests point this elsewhere so they never touch a running server's memory. */
-const STATE_DIR = process.env.NEWS_STATE_DIR ?? path.join(process.cwd(), '.cache');
+export const STATE_DIR = process.env.NEWS_STATE_DIR ?? path.join(process.cwd(), '.cache');
 const STATE_FILE = path.join(STATE_DIR, 'news-state.json');
 
 /* ---------- Memory ---------- */
@@ -129,7 +152,7 @@ const SWEEP_PROMPT = `You maintain the topics of a French news app whose promise
 ${COMMON_RULES}
 - Reuse the previous topic when the subject is the same: give its number in previous_topic_id (and keep its title unless it is now inaccurate), otherwise -1. Merge topics that are facets of one subject, split topics that grew into unrelated subjects.
 ${CATEGORY_RULES}
-- Rubrics: if at least ${MIN_TOPICS_FOR_NEW_CATEGORY} topics clearly fit none of the existing categories (for example Sport, Culture, Santé, Justice), add a new category in new_categories (short French name, one emoji) and use it. Do not add one for a single topic and never duplicate an existing category.
+- Rubrics: if at least ${MIN_TOPICS_FOR_NEW_CATEGORY} topics clearly fit none of the existing categories (for example Santé, Justice, Éducation), add a new category in new_categories (short French name, one emoji) and use it. Do not add one for a single topic. Never add a category that overlaps an existing one, even under another wording or in the plural: file the topic under the existing category instead.
 - Order topics by importance (most covered first).`;
 
 const INCREMENTAL_PROMPT = `You maintain the topics of a French news app whose promise is "one story, every perspective". You receive the topics currently shown (numbered) and a list of recent articles not yet attached to any topic (id | outlet | title — start of description).
@@ -224,17 +247,28 @@ function outletCount(urls: string[], current: State): number {
   return new Set(urls.map(url => current.articles[url]?.outlet.name).filter(Boolean)).size;
 }
 
-async function askClaude<T>(system: string, content: string, schema: Record<string, unknown>): Promise<T> {
-  const client = new Anthropic(); // reads ANTHROPIC_API_KEY from the server environment
+export async function askClaude<T>(
+  system: string,
+  content: string,
+  schema: Record<string, unknown>,
+  model: string = MODEL,
+  effort: 'low' | 'medium' | 'high' = 'medium'
+): Promise<T> {
+  // Reads ANTHROPIC_API_KEY from the server environment. A call that hangs must give up
+  // (and the app fall back) instead of keeping a visitor waiting for minutes.
+  const client = new Anthropic({ timeout: CALL_TIMEOUT_MS });
   const stream = client.beta.messages.stream({
-    model: MODEL,
+    model,
     max_tokens: 16000,
-    ...FALLBACK_PARAMS,
-    output_config: { effort: 'medium', format: { type: 'json_schema', schema } },
+    ...(model.includes('haiku') ? {} : FALLBACK_FOR_LARGER_MODELS),
+    output_config: { effort, format: { type: 'json_schema', schema } },
     system,
     messages: [{ role: 'user', content }],
   });
   const message = await stream.finalMessage();
+  // Usage, so the real cost of each call can be followed in the server log.
+  const { input_tokens, output_tokens } = message.usage;
+  console.log(`[news] ${model} (effort ${effort}): ${input_tokens} tokens in, ${output_tokens} tokens out`);
 
   if (message.stop_reason === 'refusal') {
     throw new Error(`Claude declined the request (${message.stop_details?.category ?? 'unknown'})`);
@@ -324,25 +358,28 @@ async function sweep(current: State, articles: Article[]) {
   }
 
   // New rubrics: only when several topics use them, capped, and never a duplicate.
-  const known = new Set(current.categories.map(c => c.name.toLowerCase()));
   const added: Category[] = [];
   for (const proposal of Array.isArray(raw.new_categories) ? raw.new_categories : []) {
     const name = typeof proposal?.name === 'string' ? proposal.name.trim() : '';
     const emoji = typeof proposal?.emoji === 'string' ? proposal.emoji.trim() : '';
     const uses = topics.filter(t => t.category.toLowerCase() === name.toLowerCase()).length;
+    // Never a rubric that says the same thing as an existing one ("Sports" next to "Sport").
     if (
-      name.length < 3 || name.length > 20 || known.has(name.toLowerCase()) ||
+      name.length < 3 || name.length > 20 ||
+      [...current.categories, ...added].some(c => similarRubric(c.name, name)) ||
       uses < MIN_TOPICS_FOR_NEW_CATEGORY ||
       current.categories.length + added.length >= MAX_CATEGORIES
     ) continue;
-    known.add(name.toLowerCase());
     added.push({ name, emoji: [...emoji].slice(0, 2).join('') || '✳' });
     console.log(`[news] new rubric added by the hourly sweep: ${name}`);
   }
   const categories = [...current.categories, ...added];
-  const byName = new Map(categories.map(c => [c.name.toLowerCase(), c.name]));
+  // A topic filed under a near-duplicate name goes to the rubric that already exists.
+  const rubricFor = (name: string) =>
+    categories.find(c => c.name.toLowerCase() === name.toLowerCase()) ??
+    categories.find(c => similarRubric(c.name, name));
   topics.forEach(t => {
-    t.category = byName.get(t.category.toLowerCase()) ?? FALLBACK_CATEGORY;
+    t.category = rubricFor(t.category)?.name ?? FALLBACK_CATEGORY;
   });
 
   current.topics = [...topics, ...archived];
@@ -372,7 +409,9 @@ async function attachNewArticles(current: State, candidates: Article[]) {
     used.add(article.url);
   }
 
-  const byName = new Map(current.categories.map(c => [c.name.toLowerCase(), c.name]));
+  const rubricFor = (name: string) =>
+    current.categories.find(c => c.name.toLowerCase() === name.toLowerCase()) ??
+    current.categories.find(c => similarRubric(c.name, name));
   for (const topic of Array.isArray(raw.new_topics) ? raw.new_topics : []) {
     if (!isRawTopic(topic)) continue;
     const urls = resolveUrls(topic, candidates, used);
@@ -382,7 +421,7 @@ async function attachNewArticles(current: State, candidates: Article[]) {
     current.topics.push({
       id: hash(urls[urls.length - 1]),
       title,
-      category: byName.get(topic.category.trim().toLowerCase()) ?? FALLBACK_CATEGORY,
+      category: rubricFor(topic.category.trim())?.name ?? FALLBACK_CATEGORY,
       urls,
     });
   }
@@ -587,7 +626,57 @@ async function compute(): Promise<NewsResult> {
 let cache: { at: number; result: NewsResult } | null = null;
 let inFlight: Promise<NewsResult> | null = null;
 
+/**
+ * Articles the server already knows, found by URL. The perspectives route uses
+ * this instead of trusting text sent by the client: only real, stored articles
+ * can end up in a prompt.
+ */
+export function findArticles(urls: string[]): Article[] {
+  const wanted = new Set(urls);
+  const found = new Map<string, Article>();
+  for (const [url, article] of Object.entries(loadState().articles)) {
+    if (wanted.has(url)) found.set(url, article);
+  }
+  for (const story of loadHeuristicArchive()) {
+    for (const article of story.articles) {
+      if (wanted.has(article.url) && !found.has(article.url)) found.set(article.url, article);
+    }
+  }
+  return [...found.values()];
+}
+
+/**
+ * What we already know, ready to be served at once: the topics kept from the
+ * last run (AI path) or the heuristic archive (no API key). Used after a
+ * restart, so the first visitor does not wait for a full recomputation.
+ */
+function warmResult(): NewsResult | null {
+  if (process.env.ANTHROPIC_API_KEY) {
+    const current = loadState();
+    return current.topics.length > 0 ? toResult(current, 0, 0) : null;
+  }
+  const stories = loadHeuristicArchive();
+  if (stories.length === 0) return null;
+  return {
+    stories: [...stories].sort((a, b) => b.publishedAt - a.publishedAt).slice(0, MAX_STORIES),
+    failedFeeds: 0,
+    totalFeeds: 0,
+    grouping: 'heuristic',
+    categories: DEFAULT_CATEGORIES,
+  };
+}
+
+/**
+ * Stale-while-revalidate: the last known answer is served immediately, and a
+ * recomputation (feeds, Claude, pictures: up to a minute) runs in the
+ * background when the answer is older than the refresh window. Only the very
+ * first call ever, with nothing stored, has to wait.
+ */
 export async function getNews(): Promise<NewsResult> {
+  if (!cache) {
+    const warm = warmResult();
+    if (warm) cache = { at: 0, result: warm };
+  }
   if (cache && Date.now() - cache.at < REFRESH_MS - 60_000) return cache.result;
 
   inFlight ??= compute()
@@ -598,5 +687,10 @@ export async function getNews(): Promise<NewsResult> {
     .finally(() => {
       inFlight = null;
     });
+
+  if (cache) {
+    inFlight.catch(error => console.error('[news] background refresh failed:', error));
+    return cache.result;
+  }
   return inFlight;
 }
