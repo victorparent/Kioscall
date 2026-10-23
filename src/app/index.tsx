@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Image as ExpoImage } from 'expo-image';
 import { openBrowserAsync } from 'expo-web-browser';
-import { type ComponentProps, useCallback, useEffect, useMemo, useState } from 'react';
+import { type ComponentProps, Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { SeenDivider } from '@/components/news/seen-divider';
 import { FeedSkeleton } from '@/components/news/skeleton';
 import { LeadCard, StoryRow } from '@/components/news/story-cards';
 import { StoryDetail } from '@/components/news/story-detail';
@@ -27,6 +28,7 @@ import {
   formatClock,
   formatToday,
   pickLead,
+  relativeTime,
   sectionize,
   storyStatus,
   uniqueOutlets,
@@ -48,9 +50,9 @@ export default function HomeScreen() {
     stories,
     newIds,
     categories: serverCategories,
-    aiAvailable,
     loading,
     refreshing,
+    updating,
     error,
     updatedAt,
     refresh,
@@ -113,6 +115,17 @@ export default function HomeScreen() {
     () => sectionize(homeStories.filter(story => story !== lead)),
     [homeStories, lead]
   );
+  // After a real absence, a thin line separates what is new from what was already there
+  // at the last visit (no box: just a boundary in the chronological list).
+  // The moment the screen was opened (read once: the render must stay pure).
+  const [openedAt] = useState(() => Date.now());
+  const seenDividerId = useMemo(() => {
+    if (baseline === null || openedAt - baseline < 2 * 3_600_000) return null;
+    const rest = homeStories.filter(story => story !== lead);
+    const firstSeen = rest.findIndex(story => story.publishedAt <= baseline);
+    const newerAbove = firstSeen > 0 || (lead !== undefined && lead.publishedAt > baseline);
+    return firstSeen >= 0 && newerAbove ? rest[firstSeen].id : null;
+  }, [homeStories, lead, baseline, openedAt]);
 
   const searchResults = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -159,7 +172,6 @@ export default function HomeScreen() {
           onBack={() => setSelectedStory(null)}
           onToggleSave={() => toggleSaved(selectedStory)}
           onOpenArticle={openArticle}
-          canCompare={aiAvailable}
           freshAfter={freshAfter}
         />
       </SafeAreaView>
@@ -168,7 +180,9 @@ export default function HomeScreen() {
 
   const statusText = error
     ? 'Hors ligne'
-    : updatedAt
+    : updating
+      ? 'Mise à jour en cours…'
+      : updatedAt
       ? `Mis à jour à ${formatClock(updatedAt)}`
       : 'Chargement…';
 
@@ -312,7 +326,14 @@ export default function HomeScreen() {
                 {sections.map(section => (
                   <View key={section.label}>
                     <Text style={styles.sectionLabel}>{section.label}</Text>
-                    {section.items.map(renderRow)}
+                    {section.items.map(story => (
+                      <Fragment key={story.id}>
+                        {story.id === seenDividerId && baseline !== null && (
+                          <SeenDivider label={`Déjà là à ta dernière visite (${relativeTime(baseline)})`} />
+                        )}
+                        {renderRow(story)}
+                      </Fragment>
+                    ))}
                   </View>
                 ))}
                 <Text style={styles.footer}>

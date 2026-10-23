@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { attachImages } from '@/lib/news-images';
+import { STATE_DIR } from '@/lib/server-paths';
 import {
   buildStories,
   DEFAULT_CATEGORIES,
@@ -78,8 +79,6 @@ function similarRubric(a: string, b: string): boolean {
   const y = rubricKey(b);
   return x === y || (Math.min(x.length, y.length) >= 4 && (x.startsWith(y) || y.startsWith(x)));
 }
-/** Where the server remembers its topics. Tests point this elsewhere so they never touch a running server's memory. */
-export const STATE_DIR = process.env.NEWS_STATE_DIR ?? path.join(process.cwd(), '.cache');
 const STATE_FILE = path.join(STATE_DIR, 'news-state.json');
 
 /* ---------- Memory ---------- */
@@ -100,6 +99,8 @@ type State = {
   topics: TopicState[];
   categories: Category[];
   lastSweepAt: number;
+  /** When the feeds were last read and grouped: tells a restarted server how old its memory really is. */
+  refreshedAt?: number;
 };
 
 const latestOf = (topic: TopicState, current: State) =>
@@ -247,28 +248,22 @@ function outletCount(urls: string[], current: State): number {
   return new Set(urls.map(url => current.articles[url]?.outlet.name).filter(Boolean)).size;
 }
 
-export async function askClaude<T>(
-  system: string,
-  content: string,
-  schema: Record<string, unknown>,
-  model: string = MODEL,
-  effort: 'low' | 'medium' | 'high' = 'medium'
-): Promise<T> {
+async function askClaude<T>(system: string, content: string, schema: Record<string, unknown>): Promise<T> {
   // Reads ANTHROPIC_API_KEY from the server environment. A call that hangs must give up
   // (and the app fall back) instead of keeping a visitor waiting for minutes.
   const client = new Anthropic({ timeout: CALL_TIMEOUT_MS });
   const stream = client.beta.messages.stream({
-    model,
+    model: MODEL,
     max_tokens: 16000,
-    ...(model.includes('haiku') ? {} : FALLBACK_FOR_LARGER_MODELS),
-    output_config: { effort, format: { type: 'json_schema', schema } },
+    ...(MODEL.includes('haiku') ? {} : FALLBACK_FOR_LARGER_MODELS),
+    output_config: { effort: 'medium', format: { type: 'json_schema', schema } },
     system,
     messages: [{ role: 'user', content }],
   });
   const message = await stream.finalMessage();
   // Usage, so the real cost of each call can be followed in the server log.
   const { input_tokens, output_tokens } = message.usage;
-  console.log(`[news] ${model} (effort ${effort}): ${input_tokens} tokens in, ${output_tokens} tokens out`);
+  console.log(`[news] ${MODEL}: ${input_tokens} tokens in, ${output_tokens} tokens out`);
 
   if (message.stop_reason === 'refusal') {
     throw new Error(`Claude declined the request (${message.stop_details?.category ?? 'unknown'})`);
@@ -615,6 +610,7 @@ async function compute(): Promise<NewsResult> {
       topic.imageChecked = true;
     }
   }
+  current.refreshedAt = Date.now();
   saveState(current);
   return result;
 }
@@ -627,42 +623,33 @@ let cache: { at: number; result: NewsResult } | null = null;
 let inFlight: Promise<NewsResult> | null = null;
 
 /**
- * Articles the server already knows, found by URL. The perspectives route uses
- * this instead of trusting text sent by the client: only real, stored articles
- * can end up in a prompt.
- */
-export function findArticles(urls: string[]): Article[] {
-  const wanted = new Set(urls);
-  const found = new Map<string, Article>();
-  for (const [url, article] of Object.entries(loadState().articles)) {
-    if (wanted.has(url)) found.set(url, article);
-  }
-  for (const story of loadHeuristicArchive()) {
-    for (const article of story.articles) {
-      if (wanted.has(article.url) && !found.has(article.url)) found.set(article.url, article);
-    }
-  }
-  return [...found.values()];
-}
-
-/**
  * What we already know, ready to be served at once: the topics kept from the
  * last run (AI path) or the heuristic archive (no API key). Used after a
  * restart, so the first visitor does not wait for a full recomputation.
  */
-function warmResult(): NewsResult | null {
+function warmResult(): { result: NewsResult; at: number } | null {
   if (process.env.ANTHROPIC_API_KEY) {
     const current = loadState();
-    return current.topics.length > 0 ? toResult(current, 0, 0) : null;
+    if (current.topics.length === 0) return null;
+    return { result: toResult(current, 0, 0), at: current.refreshedAt ?? 0 };
   }
   const stories = loadHeuristicArchive();
   if (stories.length === 0) return null;
+  let at = 0;
+  try {
+    at = fs.statSync(HEURISTIC_FILE).mtimeMs; // written at the end of every refresh
+  } catch {
+    // unknown age: treated as old
+  }
   return {
-    stories: [...stories].sort((a, b) => b.publishedAt - a.publishedAt).slice(0, MAX_STORIES),
-    failedFeeds: 0,
-    totalFeeds: 0,
-    grouping: 'heuristic',
-    categories: DEFAULT_CATEGORIES,
+    result: {
+      stories: [...stories].sort((a, b) => b.publishedAt - a.publishedAt).slice(0, MAX_STORIES),
+      failedFeeds: 0,
+      totalFeeds: 0,
+      grouping: 'heuristic',
+      categories: DEFAULT_CATEGORIES,
+    },
+    at,
   };
 }
 
@@ -674,8 +661,9 @@ function warmResult(): NewsResult | null {
  */
 export async function getNews(): Promise<NewsResult> {
   if (!cache) {
+    // After a restart, the age of what we have comes from the last refresh that was saved.
     const warm = warmResult();
-    if (warm) cache = { at: 0, result: warm };
+    if (warm) cache = { at: warm.at, result: warm.result };
   }
   if (cache && Date.now() - cache.at < REFRESH_MS - 60_000) return cache.result;
 
@@ -690,7 +678,9 @@ export async function getNews(): Promise<NewsResult> {
 
   if (cache) {
     inFlight.catch(error => console.error('[news] background refresh failed:', error));
-    return cache.result;
+    // The answer is the previous one: say so, so the app asks again once the new one is ready
+    // instead of showing days-old news as if they were current.
+    return { ...cache.result, refreshing: true };
   }
   return inFlight;
 }

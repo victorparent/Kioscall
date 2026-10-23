@@ -15,6 +15,9 @@ import {
 const STORAGE_KEY = 'kioscall:feed:v1';
 const STORED_STORIES = 200;
 const STORED_ARTICLES_PER_STORY = 12;
+/** The server answered with its previous results while it recomputes: ask again soon. */
+const RETRY_MS = 20_000;
+const MAX_RETRIES = 9;
 
 type Saved = { stories: Story[]; categories: Category[]; since?: number };
 
@@ -34,8 +37,6 @@ export function useNews() {
   const [newIds, setNewIds] = useState<Set<string>>(new Set());
   const storiesRef = useRef<Story[]>([]);
   const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
-  /** True when the server groups with Claude: the "compare the angles" feature then exists. */
-  const [aiAvailable, setAiAvailable] = useState(false);
   const categoriesRef = useRef<Category[]>(DEFAULT_CATEGORIES);
   /** Server time of the last answer: asking "since" then returns only what changed. */
   const sinceRef = useRef<number | undefined>(undefined);
@@ -43,6 +44,11 @@ export function useNews() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  /** The server is still preparing fresh results (what is shown may be old). */
+  const [updating, setUpdating] = useState(false);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const retries = useRef(0);
+  const loadRef = useRef<() => Promise<void>>(async () => undefined);
   const inFlight = useRef(false);
   const lastLoad = useRef(0);
 
@@ -82,13 +88,23 @@ export function useNews() {
       setStories(merged);
       setNewIds(firstLoad ? new Set() : new Set(added));
       addCategories(result.categories ?? []);
-      if (result.grouping) setAiAvailable(result.grouping === 'ai');
       if (result.serverTime) sinceRef.current = result.serverTime;
       persist();
       setUpdatedAt(Date.now());
       setError(null);
+
+      if (result.refreshing && retries.current < MAX_RETRIES) {
+        retries.current += 1;
+        setUpdating(true);
+        clearTimeout(retryTimer.current);
+        retryTimer.current = setTimeout(() => loadRef.current(), RETRY_MS);
+      } else {
+        retries.current = 0;
+        setUpdating(false);
+      }
     } catch {
       // Keep the previous stories on screen; just flag the failure.
+      setUpdating(false);
       setError('Impossible de mettre à jour l’actualité.');
     } finally {
       lastLoad.current = Date.now();
@@ -101,6 +117,10 @@ export function useNews() {
   const refresh = useCallback(() => {
     setRefreshing(true);
     load();
+  }, [load]);
+
+  useEffect(() => {
+    loadRef.current = load;
   }, [load]);
 
   useEffect(() => {
@@ -132,10 +152,11 @@ export function useNews() {
     });
     return () => {
       cancelled = true;
+      clearTimeout(retryTimer.current);
       clearInterval(timer);
       subscription.remove();
     };
   }, [load, addCategories]);
 
-  return { stories, newIds, categories, aiAvailable, loading, refreshing, error, updatedAt, refresh };
+  return { stories, newIds, categories, loading, refreshing, updating, error, updatedAt, refresh };
 }

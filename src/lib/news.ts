@@ -73,14 +73,63 @@ export const CATEGORY_EMOJI: Record<string, string> = {
 /** `category` is a hint from thematic feeds; general feeds have none and are classified through the story they join. */
 export type Category = { name: string; emoji: string };
 
-/** "Compare the angles": what a story's outlets agree on, and what each one puts forward. */
-export type Perspectives = {
-  common: string[];
-  /** `quote` is the exact passage of the outlet's article the angle relies on (checked by the server). */
-  angles: { outlet: string; angle: string; quote: string }[];
-  /** Why the comparison is limited, when it is. */
-  note: string;
+/**
+ * Can this article be read in full? Said only when it is known: `unknown` shows
+ * nothing, because a guess about a given article would sometimes be wrong.
+ */
+export type Access = 'free' | 'paid' | 'unknown';
+
+/**
+ * Outlets with no paywall at all: their pages say nothing about it (there is
+ * nothing to declare), and every article is free. Outlets that mix free and
+ * paid articles are never listed here: they are checked article by article.
+ */
+const OUTLET_ACCESS: Record<string, Access> = {
+  'France 24': 'free',
+  BFMTV: 'free',
+  '20 Minutes': 'free',
+  Clubic: 'free',
+  'Journal du Geek': 'free',
 };
+
+export function accessDefault(outlet: string): Access {
+  return OUTLET_ACCESS[outlet] ?? 'unknown';
+}
+
+/** Domains of the outlets we read: the only sites the server will ever fetch to check access. */
+const OUTLET_HOSTS: Record<string, string> = {
+  'lemonde.fr': 'Le Monde',
+  'franceinfo.fr': 'franceinfo',
+  'francetvinfo.fr': 'franceinfo',
+  'lefigaro.fr': 'Le Figaro',
+  'france24.com': 'France 24',
+  'rfi.fr': 'RFI',
+  'bfmtv.com': 'BFMTV',
+  'numerama.com': 'Numerama',
+  'liberation.fr': 'Libération',
+  'lexpress.fr': "L'Express",
+  'la-croix.com': 'La Croix',
+  'huffingtonpost.fr': 'HuffPost',
+  'humanite.fr': "L'Humanité",
+  'ouest-france.fr': 'Ouest-France',
+  '20minutes.fr': '20 Minutes',
+  'clubic.com': 'Clubic',
+  'journaldugeek.com': 'Journal du Geek',
+  'frandroid.com': 'Frandroid',
+};
+
+/** The outlet a URL belongs to, or null when the site is not one we read. */
+export function outletOfUrl(url: string): string | null {
+  try {
+    const { protocol, hostname } = new URL(url);
+    if (protocol !== 'https:') return null;
+    const host = hostname.toLowerCase();
+    const domain = Object.keys(OUTLET_HOSTS).find(d => host === d || host.endsWith(`.${d}`));
+    return domain ? OUTLET_HOSTS[domain] : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Rubriques de départ. Le serveur peut en ajouter d'autres (voir news-ai.ts). */
 export const DEFAULT_CATEGORIES: Category[] = Object.entries(CATEGORY_EMOJI).map(
@@ -612,6 +661,8 @@ export type NewsResult = {
   categories?: Category[];
   /** Server clock when this answer was built: send it back as `since` to get only what changed. */
   serverTime?: number;
+  /** True when this answer is the previous one, served while the server recomputes: ask again shortly. */
+  refreshing?: boolean;
 };
 
 /** Reads every feed and returns the articles, without grouping them. */

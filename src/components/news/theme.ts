@@ -11,6 +11,7 @@ export const COLORS = {
   accentStrong: '#5B3FD6',
   accentSoft: '#241F40',
   success: '#8BE0B1',
+  warning: '#F2C26B',
   danger: '#F28B82',
 };
 

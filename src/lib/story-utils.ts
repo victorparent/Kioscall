@@ -1,4 +1,4 @@
-import type { Article, Outlet, Story } from '@/lib/news';
+import type { Access, Article, Outlet, Story } from '@/lib/news';
 
 const DAYS = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
 const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
@@ -70,18 +70,31 @@ export function storyThumb(story: Story): string | undefined {
 
 export type OutletGroup = { outlet: Outlet; articles: Article[] };
 
-/** Articles grouped by outlet; the outlet with the most recent article comes first. */
-export function groupByOutlet(articles: Article[]): OutletGroup[] {
+/** Free first: what the reader can open and read in full comes before what asks for a subscription. */
+export function accessRank(access: Access): number {
+  return { free: 0, unknown: 1, paid: 2 }[access];
+}
+
+/**
+ * Articles grouped by outlet. With `accessOf`, free articles come first inside
+ * each outlet, and outlets that have a free article come before the others;
+ * ties keep the most recent first.
+ */
+export function groupByOutlet(articles: Article[], accessOf?: (article: Article) => Access): OutletGroup[] {
+  const rank = (article: Article) => (accessOf ? accessRank(accessOf(article)) : 0);
   const groups = new Map<string, OutletGroup>();
   [...articles]
-    .sort((a, b) => b.publishedAt - a.publishedAt)
+    .sort((a, b) => rank(a) - rank(b) || b.publishedAt - a.publishedAt)
     .forEach(article => {
       const group = groups.get(article.outlet.name) ?? { outlet: article.outlet, articles: [] };
       group.articles.push(article);
       groups.set(article.outlet.name, group);
     });
-  return [...groups.values()];
+  const newest = (group: OutletGroup) => Math.max(...group.articles.map(article => article.publishedAt));
+  const best = (group: OutletGroup) => Math.min(...group.articles.map(rank));
+  return [...groups.values()].sort((a, b) => best(a) - best(b) || newest(b) - newest(a));
 }
+
 
 /** The "subject of the moment": the most covered story of the last 24 hours. */
 export function pickLead(stories: Story[], now = Date.now()): Story | undefined {

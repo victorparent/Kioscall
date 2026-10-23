@@ -1,9 +1,10 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Image as ExpoImage } from 'expo-image';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 
-import type { Article, Story } from '@/lib/news';
+import { fetchAccess } from '@/lib/access';
+import { type Access, accessDefault, type Article, type Story } from '@/lib/news';
 import {
   formatDateTime,
   groupByOutlet,
@@ -12,7 +13,7 @@ import {
   storyImage,
   uniqueOutlets,
 } from '@/lib/story-utils';
-import { PerspectivesCard } from './perspectives-card';
+import { AccessBadge } from './access-badge';
 import { COLORS, MAX_WIDTH } from './theme';
 
 type Props = {
@@ -21,8 +22,6 @@ type Props = {
   onBack: () => void;
   onToggleSave: () => void;
   onOpenArticle: (url: string) => void;
-  /** The server uses Claude: offer the "compare the angles" card. */
-  canCompare: boolean;
   /** Time of the latest article the reader had already seen: newer ones are marked. */
   freshAfter?: number;
 };
@@ -33,11 +32,13 @@ function ArticleRow({
   article,
   showOutlet,
   isFresh,
+  access,
   onPress,
 }: {
   article: Article;
   showOutlet: boolean;
   isFresh: boolean;
+  access: Access;
   onPress: () => void;
 }) {
   return (
@@ -45,7 +46,7 @@ function ArticleRow({
       onPress={onPress}
       accessibilityRole="link"
       accessibilityLabel={`${article.outlet.name} : ${article.title}`}
-      style={({ pressed }) => [styles.article, pressed && { opacity: 0.85 }]}
+      style={({ pressed }) => [styles.article, access === 'paid' && styles.articlePaid, pressed && { opacity: 0.85 }]}
     >
       <View style={styles.articleBody}>
         {showOutlet && (
@@ -56,6 +57,7 @@ function ArticleRow({
             <Text style={styles.articleOutletName}>{article.outlet.name}</Text>
           </View>
         )}
+        <AccessBadge access={access} />
         <Text style={styles.articleTitle}>{article.title}</Text>
         {article.description ? (
           <Text style={styles.articleDescription} numberOfLines={3}>
@@ -67,7 +69,7 @@ function ArticleRow({
             {isFresh ? <Text style={styles.articleFresh}>NOUVEAU  </Text> : null}
             {formatDateTime(article.publishedAt)}
           </Text>
-          <Text style={styles.articleRead}>Lire</Text>
+          <Text style={styles.articleRead}>{access === 'paid' ? 'Lire (abonnés)' : 'Lire'}</Text>
           <Ionicons name="open-outline" size={14} color={COLORS.accent} />
         </View>
       </View>
@@ -78,12 +80,29 @@ function ArticleRow({
   );
 }
 
-export function StoryDetail({ story, saved, onBack, onToggleSave, onOpenArticle, canCompare, freshAfter }: Props) {
+export function StoryDetail({ story, saved, onBack, onToggleSave, onOpenArticle, freshAfter }: Props) {
   const [mode, setMode] = useState<Mode>('outlet');
   const image = storyImage(story);
   const lead = story.articles.find(article => article.description);
   const outletCount = uniqueOutlets(story).length;
-  const groups = useMemo(() => groupByOutlet(story.articles), [story.articles]);
+  // What the publishers' pages say about each article (free or paid); until the server answers,
+  // the outlet's usual model.
+  const [verified, setVerified] = useState<Record<string, Access>>({});
+  useEffect(() => {
+    let cancelled = false;
+    fetchAccess(story.articles.map(article => article.url)).then(result => {
+      if (!cancelled) setVerified(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [story.articles]);
+  const accessOf = useCallback(
+    (article: Article): Access => verified[article.url] ?? accessDefault(article.outlet.name),
+    [verified]
+  );
+  // Articles that can be read in full come first.
+  const groups = useMemo(() => groupByOutlet(story.articles, accessOf), [story.articles, accessOf]);
   const chronological = useMemo(
     () => [...story.articles].sort((a, b) => b.publishedAt - a.publishedAt),
     [story.articles]
@@ -151,8 +170,6 @@ export function StoryDetail({ story, saved, onBack, onToggleSave, onOpenArticle,
           </View>
         )}
 
-        {canCompare && outletCount >= 2 && <PerspectivesCard story={story} outlets={uniqueOutlets(story)} />}
-
         <Text style={styles.sectionTitle}>Les points de vue</Text>
         <Text style={styles.sectionSub}>
           {`Le même sujet, vu par ${outletCount} rédaction${outletCount > 1 ? 's' : ''}.`}
@@ -195,6 +212,7 @@ export function StoryDetail({ story, saved, onBack, onToggleSave, onOpenArticle,
                     article={article}
                     showOutlet={false}
                     isFresh={freshAfter !== undefined && article.publishedAt > freshAfter}
+                    access={accessOf(article)}
                     onPress={() => onOpenArticle(article.url)}
                   />
                 ))}
@@ -206,6 +224,7 @@ export function StoryDetail({ story, saved, onBack, onToggleSave, onOpenArticle,
                 article={article}
                 showOutlet
                 isFresh={freshAfter !== undefined && article.publishedAt > freshAfter}
+                access={accessOf(article)}
                 onPress={() => onOpenArticle(article.url)}
               />
             ))}
@@ -294,6 +313,7 @@ const styles = StyleSheet.create({
   articleOutletName: { color: COLORS.textSecondary, fontSize: 13, fontWeight: '700' },
   articleTitle: { color: COLORS.text, fontSize: 16, lineHeight: 22, fontWeight: '600' },
   articleDescription: { color: COLORS.textSecondary, fontSize: 14, lineHeight: 20 },
+  articlePaid: { opacity: 0.78 },
   articleFooter: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   articleDate: { color: COLORS.muted, fontSize: 13, flex: 1 },
   articleFresh: { color: COLORS.success, fontWeight: '800', letterSpacing: 0.5 },
